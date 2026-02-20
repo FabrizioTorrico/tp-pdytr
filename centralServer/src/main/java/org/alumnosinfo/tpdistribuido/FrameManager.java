@@ -14,4 +14,8 @@ public class FrameManager {
     public static byte[] getFrame(String camId) {
         return frames.get(camId);
     }
+
+    public static java.util.Set<String> getCameraIds() {
+        return frames.keySet();
+    }
 }
