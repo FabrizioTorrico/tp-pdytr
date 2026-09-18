@@ -2,20 +2,26 @@
 
 **Cátedra:** Programación Distribuida y Tiempo Real (PDyTR)  
 **Proyecto:** Sistema de Visión Computacional Distribuido y Monitoreo Inteligente en el Borde (Edge Computing)  
+**Autores:** Nicolas Ricciardi — Fabrizio Torrico  
+**Facultad de Informática, Universidad Nacional de La Plata (UNLP)** — Agosto 2026  
 
 ---
 
 ## 1. Funcionamiento General del Sistema
 
-### 1.1. Propósito y Paradigma
-El presente sistema implementa una arquitectura distribuida de videovigilancia diseñada para optimizar drásticamente el uso de ancho de banda en la red y la carga computacional en el servidor central.
+### 1.1. Propósito y Paradigma de Edge Computing
+El sistema implementa una arquitectura distribuida de videovigilancia orientada a la **optimización del uso de ancho de banda en la red y del procesamiento central**, dando cumplimiento a los requerimientos del trabajo final de la cátedra de Programación Distribuida y Tiempo Real (PDyTR).
 
-En los esquemas tradicionales de videovigilancia continua (CCTV), todos los nodos de captura transmiten sin interrupción flujos de video completos hacia un servidor central, lo que genera saturación de red y cuellos de botella de procesamiento. Para resolver esto, el sistema adopta el paradigma de **Edge Computing (Computación en el Borde)**:
+En concordancia con las definiciones metodológicas fijadas en las reuniones de seguimiento de la bitácora, se mantiene estricta consistencia en la terminología empleada: los términos *"Edge"* y *"Nodo de Borde"* representan conceptualmente el cómputo en el extremo de la red (implementado tanto sobre hardware físico real **Raspberry Pi 4B** como sobre máquinas virtuales Linux), mientras que *"Central Server"* y *"Back End"* corresponden al servidor centralizador.
 
-1. **Procesamiento en el Borde**: Los nodos de borde analizan localmente los fotogramas capturados por sus respectivas cámaras utilizando algoritmos de visión artificial.
-2. **Silencio de Red (Ahorro de Ancho de Banda)**: Mientras no se registre actividad o movimiento significativo en la escena, los nodos de borde permanecen en reposo de transmisión; no se envía video a través de la red.
-3. **Transmisión por Eventos**: Al detectarse movimiento relevante (o ante la orden manual de un operador desde el cliente web), el nodo conmuta al modo de transmisión activa y comienza a transmitir fotogramas comprimidos hacia el Servidor Central a través de un socket TCP.
-4. **Procesamiento Central y Anotación**: El Servidor Central recibe los fotogramas, aplica procesamiento visual para delimitar y resaltar las áreas en movimiento en tiempo real, mantiene un registro del estado de todas las cámaras conectadas, gestiona temporizadores de inactividad y distribuye los flujos de video y APIs REST hacia el Cliente Web (Dashboard).
+En los esquemas convencionales de CCTV, todas las cámaras transmiten de forma ininterrumpida flujos de video completos hacia un servidor central, lo que satura los canales de comunicación y genera cuellos de botella de procesamiento. Para mitigar esta problemática, el presente proyecto aplica el paradigma de **Edge Computing (Computación en el Borde)**:
+
+1. **Definición de Video "de Interés":** Siguiendo el alcance delimitado por la cátedra, se define video de interés estrictamente como **video con identificación de movimiento**. Los nodos de borde transmiten hacia el servidor central *únicamente* cuando se discrimina movimiento local en la escena vigilada.
+2. **Procesamiento en el Borde:** Cada nodo de borde analiza localmente las imágenes capturadas utilizando técnicas de visión por computadora livianas implementadas con OpenCV.
+3. **Silencio de Red (Ahorro de Recursos):** Mientras no se registre actividad en la escena, los nodos no transmiten video por la red, permaneciendo en estado de análisis local silencioso.
+4. **Transmisión Conducida por Eventos:** Al detectarse movimiento relevante (o ante la petición explícita de un operador desde el cliente web), el nodo conmuta a modo de transmisión activa y envía los fotogramas comprimidos mediante un socket TCP hacia el Servidor Central.
+5. **Procesamiento Central y Distribución:** El Servidor Central recibe los fotogramas, aplica algoritmos de sustracción y marcado para delimitar visualmente el movimiento con recuadros verdes y leyendas de alerta, gestiona temporizadores de inactividad para ordenar el retorno al modo silencioso cuando cesa la actividad, y expone los flujos de video mediante MJPEG y APIs REST hacia el Dashboard web.
+6. **Topología Distribuida:** El sistema opera con al menos 2 nodos edge concurrentes (un nodo real sobre Raspberry Pi 4 y nodos simulados/virtualizados en PC mediante Vagrant).
 
 ---
 
@@ -41,8 +47,8 @@ graph TD
     end
 
     subgraph Nodos_de_Borde [Nodos Edge - Edge Computing]
-        EN1[Edge Node 1 - VM: 192.168.56.20\nCAM_01]
-        EN2[Edge Node 2 - VM: 192.168.56.21\nCAM_02]
+        EN1[Edge Node 1 - VM / RPi 4\nCAM_01]
+        EN2[Edge Node 2 - VM Linux\nCAM_02]
     end
 
     %% Enlaces TCP Socket
@@ -56,29 +62,29 @@ graph TD
 
 ---
 
-### 1.3. Componentes Principales del Sistema
+### 1.3. Componentes Principales
 
 1. **Nodos de Borde (`edgeNode`)**:
-   - Capturan imágenes en tiempo real desde una cámara física o fuente de video simulada.
+   - Capturan video desde dispositivos de captura física (webcam USB vía Video4Linux2 en Linux) o archivos de video pregrabados para pruebas de simulación.
    - Ejecutan una máquina de estados con dos modalidades: **Monitoreo Local** (análisis silencioso) y **Streaming Activo** (transmisión de video).
-   - Realizan detección de movimiento local en memoria mediante técnicas de visión artificial con OpenCV.
-   - Mantienen una conexión TCP bidireccional con el Servidor Central para el envío de fotogramas y la recepción de comandos remotos.
+   - Realizan detección de movimiento local en memoria mediante técnicas de visión artificial determinísticas con OpenCV.
+   - Mantienen una conexión TCP bidireccional con el Servidor Central para el envío de fotogramas y la recepción de comandos remotos (`START` / `STOP`).
 
 2. **Servidor Central (`centralServer`)**:
-   - **Servidor TCP multihilo**: Recibe conexiones concurrentes en el puerto 5555, identifica cada cámara en el apretón de manos inicial y encola los fotogramas entrantes en búferes acotados para evitar latencia acumulada.
-   - **Registro Central concurrente**: Estructura de datos compartida y segura para hilos que mantiene el estado en tiempo real de cada cámara (dirección IP, último fotograma procesado, canal de comandos, estampa de tiempo del último fotograma y estampa de tiempo del último movimiento).
-   - **Procesador de Fotogramas**: Módulo independiente que analiza los fotogramas recibidos, detecta las regiones en movimiento, dibuja cuadros delimitadores (*bounding boxes*) y leyendas de alerta, y publica el fotograma procesado en el registro.
-   - **Monitor de Inactividad**: Tarea periódica de supervisión que detecta cuándo una cámara activa deja de registrar movimiento durante un tiempo prolongado, emitiendo automáticamente la orden de apagado para restablecer el modo de ahorro de red.
-   - **Servidor Web HTTP**: Expone endpoints REST para administración remota y un canal de transmisión de video continuo en formato MJPEG (`multipart/x-mixed-replace`) para visualización directa en navegadores.
+   - **Servidor TCP multihilo**: Recibe conexiones concurrentes en el puerto 5555, identifica cada cámara en el handshake inicial y encola los fotogramas entrantes en búferes acotados (`LinkedBlockingQueue` de capacidad 5) para eliminar la latencia acumulada (lag).
+   - **Registro Central concurrente**: Estructura de datos compartida y segura para hilos (`ConcurrentHashMap`) que mantiene el estado en tiempo real de cada cámara (dirección IP, último fotograma procesado, canal de comandos, estampa de tiempo del último fotograma y estampa de tiempo del último movimiento).
+   - **Procesador de Fotogramas**: Módulo independiente que analiza los fotogramas recibidos, detecta las regiones en movimiento, dibuja cuadros delimitadores (*bounding boxes*) verdes y la leyenda `"MOVIMIENTO DETECTADO"`, y publica el fotograma procesado en el registro.
+   - **Monitor de Inactividad**: Tarea periódica de supervisión (cada 10 segundos) que detecta cuándo una cámara activa deja de registrar movimiento durante más de 60 segundos, emitiendo automáticamente la orden TCP `STOP` para restablecer el modo silencioso de ahorro de red.
+   - **Servidor Web HTTP**: Expone endpoints REST en el puerto 8081 para administración remota y un canal de transmisión de video continuo en formato MJPEG (`multipart/x-mixed-replace`) para visualización directa en navegadores.
 
 3. **Cliente Web (`webClient`)**:
-   - Panel de control interactivo en React que consulta periódicamente el estado de las cámaras, visualiza las transmisiones de video en vivo y permite el encendido/apagado manual de los flujos de video.
+   - Panel de control interactivo en React + Vite que consulta periódicamente (polling cada 500 ms) el estado de las cámaras, visualiza las transmisiones de video en vivo y permite el encendido/apagado manual de los flujos de video.
 
 ---
 
 ### 1.4. Máquina de Estados de los Nodos Edge
 
-El comportamiento operativo de cada nodo de borde está gobernado por una máquina de estados finita:
+Cada nodo de borde implementa una máquina de estados finita estrictamente excluyente con dos modos de funcionamiento (establecidos junto a la cátedra el 02/02/26):
 
 ```mermaid
 stateDiagram-v2
@@ -103,49 +109,52 @@ stateDiagram-v2
     Estado1 --> Estado2 : Detección de Movimiento Local (Área > 500 px²)
     Estado1 --> Estado2 : Comando TCP 'START' recibido (desde Dashboard Web)
     
-    Estado2 --> Estado1 : Comando TCP 'STOP' recibido (por Timeout o Dashboard)
+    Estado2 --> Estado1 : Comando TCP 'STOP' recibido (por Timeout 60s o Dashboard)
 ```
 
 - **Estado 1 (Monitoreo / Análisis Local)**:
-  - El nodo captura fotogramas de la cámara a velocidad normal, pero **no emite tráfico de video hacia la red**.
-  - Cada fotograma se convierte a escala de grises, se suaviza mediante un desenfoque gaussiano para filtrar ruido, y se compara contra el fotograma anterior mediante sustracción de fondo (diferencia absoluta).
+  - El nodo captura fotogramas de la cámara a velocidad normal (30 FPS), pero **no emite tráfico de video hacia la red**.
+  - Cada fotograma se convierte a escala de grises, se suaviza mediante un desenfoque gaussiano (kernel de 21x21) para filtrar ruido del sensor, y se compara contra el fotograma anterior mediante sustracción de fondo (diferencia absoluta `absdiff`).
   - La imagen resultante se binariza mediante un umbral fijo y se aplica una dilatación morfológica para consolidar áreas contiguas.
   - Se calculan los contornos de la imagen binarizada. Si el área del contorno mayor supera el umbral estipulado (500 píxeles cuadrados), el nodo determina que existe movimiento relevante y conmuta al **Estado 2**.
-  - Si la escena permanece estática, el hilo descansa brevemente para minimizar el uso de CPU.
+  - Si la escena permanece estática, el hilo descansa preventivamente para minimizar el uso de CPU.
 
 - **Estado 2 (Transmisión Activa)**:
-  - El nodo captura fotogramas, los comprime en formato JPEG y los transmite inmediatamente a través del socket TCP precedidos por su longitud en bytes.
-  - El nodo permanece en este estado enviando video continuo hasta recibir el comando TCP `STOP` desde el servidor (ya sea porque transcurrió el tiempo de inactividad sin movimiento o porque el operador lo solicitó desde el panel web).
+  - El nodo captura fotogramas, los comprime en formato JPEG y los transmite inmediatamente a través del socket TCP precedidos por su longitud en bytes (entero Big-Endian de 4 bytes).
+  - El nodo permanece en este estado enviando video continuo hasta recibir el comando TCP `STOP` desde el servidor (ya sea porque transcurrió el tiempo de inactividad de 60 segundos sin movimiento o porque el operador lo solicitó desde el panel web).
   - Al recibir `STOP`, el nodo vuelve al **Estado 1** y reinicia su fotograma de referencia local para prevenir detecciones espurias.
+
+**Justificación del Algoritmo en el Edge (Visión Clásica vs. YOLO):**  
+Durante la fase de prototipado se evaluaron modelos de redes neuronales (YOLOv5 Nano) sobre la CPU de la Raspberry Pi 4B. Las mediciones mostraron una degradación crítica del rendimiento a ~5 FPS y un consumo excesivo de CPU/temperatura. Siguiendo las directivas docentes, se consolidó el algoritmo clásico determinístico con OpenCV (diferencia de fotogramas sucesivos, desenfoque gaussiano y análisis de contornos), lo cual asegura una tasa fluida y estable de **~30 FPS** con mínimo consumo computacional.
 
 ---
 
 ### 1.5. Protocolo de Comunicación de Red
 
-1. **Apretón de Manos (Handshake Inicial)**:
+1. **Handshake Inicial**:
    - Al establecer la conexión TCP en el puerto 5555, el Edge Node envía como primer mensaje una cadena UTF-8 con su identificador único (por ejemplo, `CAM_01`).
    - El Servidor Central asocia dicho socket a la identidad de la cámara y a su dirección IP de origen.
 
 2. **Transmisión de Video en el Canal de Datos (Edge $\rightarrow$ Servidor)**:
-   - Cada fotograma se envía como una trama compuesta por un encabezado de 4 bytes (entero de 32 bits con signo) que especifica la longitud exacta del búfer en bytes, seguido inmediatamente por el arreglo binario de la imagen comprimida en JPEG.
+   - Cada fotograma se envía como una trama compuesta por un encabezado de 4 bytes (entero de 32 bits Big-Endian / `writeInt`) que especifica la longitud exacta del búfer en bytes, seguido inmediatamente por el arreglo binario de la imagen comprimida en JPEG.
 
-3. **Canal de Control Bidireccional (Servidor $\rightarrow$ Edge)**:
-   - A través del mismo socket TCP, el Servidor Central envía cadenas de comando UTF-8:
-     - `START`: Fuerza al nodo de borde a ingresar al Estado 2 (Streaming Activo).
-     - `STOP`: Ordena al nodo de borde regresar al Estado 1 (Monitoreo Local).
+3. **Canal de Control Bidireccional sobre TCP (Servidor $\rightarrow$ Edge)**:
+   - Conforme a lo acordado en la reunión del 08/04/26, se descartó el uso de servidores HTTP en el edge para simplificar el nodo y ahorrar recursos. A través del mismo socket TCP ya establecido, el Servidor Central envía cadenas de comando UTF-8:
+     - `START`: Ordena al nodo de borde ingresar al Estado 2 (Streaming Activo).
+     - `STOP`: Ordena al nodo de borde regresar al Estado 1 (Monitoreo Local silencioso).
 
 4. **Interfaz HTTP / REST y Transmisión MJPEG (Servidor $\leftrightarrow$ Cliente Web)**:
    - `GET /api/cameras`: Retorna la lista en formato JSON de todas las cámaras registradas, incluyendo su identificador, dirección IP y estado booleano de transmisión.
    - `GET /api/start?id=CAM_ID`: Solicita al servidor enviar el comando `START` a la cámara especificada.
    - `GET /api/stop?id=CAM_ID`: Solicita al servidor enviar el comando `STOP` a la cámara especificada.
-   - `GET /stream?id=CAM_ID`: Canal de streaming continuo que utiliza el estándar MIME `multipart/x-mixed-replace` para enviar la secuencia de fotogramas procesados directamente hacia elementos visuales del navegador web.
+   - `GET /stream?id=CAM_ID`: Canal de streaming continuo que utiliza el estándar MIME `multipart/x-mixed-replace; boundary=--BoundaryString` para enviar la secuencia de fotogramas procesados directamente hacia elementos visuales `<img>` del navegador web.
 
 ---
 
 ## 2. Estrategia de Virtualización y Aprovisionamiento con Vagrant
 
-### 2.1. Arquitectura de Virtualización
-Para garantizar el aislamiento de procesos y reproducibilidad de las pruebas, el sistema se virtualiza utilizando **Vagrant** junto con el hipervisor **Oracle VirtualBox**.
+### 2.1. Arquitectura de Red y Virtualización
+Para garantizar el aislamiento de procesos y total reproducibilidad en la evaluación del sistema (según lo conversado en la bitácora respecto a no utilizar Docker sino máquinas virtuales completas por razones académicas y técnicas), la solución se virtualiza utilizando **Vagrant** junto con el hipervisor **Oracle VirtualBox**.
 
 La infraestructura virtual se compone de tres máquinas virtuales conectadas a través de una **Red Privada (Host-Only Network)** bajo el segmento `192.168.56.0/24`:
 
@@ -157,17 +166,15 @@ La infraestructura virtual se compone de tres máquinas virtuales conectadas a t
 
 ---
 
-### 2.2. Aprovisionamiento y Compilación (Aclaración de Entrega Académica)
+### 2.2. Aprovisionamiento vs. Despliegue en Producción
 
-> [!IMPORTANT]
-> **Mecanismo de Instalación y Aprovisionamiento:**
-> - En la configuración de Vagrant, el directorio raíz del proyecto en la máquina física se monta automáticamente en el punto `/vagrant` de cada máquina virtual mediante carpetas compartidas.
-> - Durante la etapa de **Aprovisionamiento (`provision shell`)**, se actualizan los repositorios del sistema operativo base (Ubuntu 22.04 LTS) y se instalan de manera automatizada las dependencias de software necesarias (OpenJDK 21, Apache Maven y utilidades de video).
-> - En esa misma sección de aprovisionamiento, se ingresa al directorio del código fuente (`/vagrant/centralServer` o `/vagrant/edgeNode`) y se ejecuta la compilación del proyecto (`mvn clean compile`).
-> - Asimismo, se crean scripts ejecutables de inicio en el directorio de usuario de la máquina virtual (`start_central.sh` y `start_edge.sh`).
->
-> **Aclaración sobre el Modelo de Despliegue (Deploy):**  
-> Se deja constancia de que la compilación directa del código fuente durante el aprovisionamiento de las máquinas virtuales no constituye un proceso de despliegue productivo estándar (en el cual se generarían artefactos inmutables precompilados, imágenes de contenedor o paquetes distribuidos mediante pipelines de CI/CD). Para los propósitos de esta entrega académica, este mecanismo permite evaluar de manera inmediata, transparente y totalmente reproducible el código fuente y la construcción del software sin necesidad de adjuntar binarios pesados en el repositorio.
+> [!NOTE]
+> **Nota Técnica sobre el Modelo de Entrega y Aprovisionamiento (Reunión del 08/04/26)**  
+> En la configuración de Vagrant de este proyecto, el directorio del repositorio en la máquina anfitriona se monta automáticamente en el punto `/vagrant` de cada máquina virtual mediante carpetas compartidas.  
+>  
+> Durante la etapa de **aprovisionamiento (`provision shell`)**, se actualizan los repositorios del sistema operativo base (Ubuntu 22.04 LTS) y se instalan de manera automatizada las dependencias de software necesarias (OpenJDK 21, Apache Maven y utilidades de video). Inmediatamente a continuación, se ingresa a la carpeta compartida correspondiente (`/vagrant/centralServer` o `/vagrant/edgeNode`) y se ejecuta la compilación del código fuente (`mvn clean compile`), generando asimismo los scripts ejecutables de inicio (`start_central.sh` y `start_edge.sh`).  
+>  
+> **Aclaración de Diseño:** Se deja constancia de que compilar el código fuente directamente en la etapa de aprovisionamiento de las máquinas virtuales no constituye un proceso de despliegue productivo estándar (donde se generarían artefactos inmutables precompilados, imágenes de contenedor o paquetes Debian versionados). Para los fines de esta entrega académica, este mecanismo garantiza máxima **transparencia, reproducibilidad y verificación directa** de la compilación y ejecución del software sin necesidad de adjuntar binarios pesados en el repositorio de control de versiones.
 
 ---
 
@@ -176,7 +183,7 @@ La infraestructura virtual se compone de tres máquinas virtuales conectadas a t
 El archivo de configuración principal de la infraestructura es el [Vagrantfile](file:///c:/Users/NICOLAS/Desktop/2026/Facultad/pdytr/tp-pdytr/Vagrantfile). A continuación se documentan sus secciones y las dependencias explícitas de cada máquina virtual:
 
 ### 3.1. Configuración Base Global
-- **Box Base**: Se utiliza la imagen oficial `ubuntu/jammy64` (Ubuntu Server 22.04 LTS), que proporciona un entorno Linux estándar, estable y compatible con los paquetes de Java 21 y herramientas de captura multimedia.
+- **Box Base**: Se utiliza la imagen oficial `ubuntu/jammy64` (Ubuntu Server 22.04 LTS de 64 bits), que proporciona un entorno Linux estándar, homogéneo y compatible con los paquetes de Java 21 y herramientas de captura multimedia.
 
 ### 3.2. Sección del Servidor Central (`central_server`)
 - **Identificación y Red**: Asigna el nombre de host `centralserver` y la dirección IP estática `192.168.56.10` en la red privada.
@@ -185,7 +192,7 @@ El archivo de configuración principal de la infraestructura es el [Vagrantfile]
 - **Aprovisionamiento y Dependencias Instaladas**:
   - `openjdk-21-jdk`: Kit de desarrollo de Java versión 21 para compilar y ejecutar la aplicación.
   - `maven`: Herramienta de gestión y construcción de proyectos Java.
-  - **Compilación del Código**: Se posiciona en `/vagrant/centralServer` y ejecuta la compilación del código fuente.
+  - **Compilación del Código**: Se posiciona en `/vagrant/centralServer` y ejecuta la compilación del código fuente (`mvn clean compile`).
   - **Script de Inicio**: Genera `/home/vagrant/start_central.sh`, configurado para ejecutar la clase principal del servidor central mediante Maven.
 
 ### 3.3. Secciones de los Nodos de Borde (`edge_node_1` y `edge_node_2`)
@@ -196,7 +203,7 @@ El archivo de configuración principal de la infraestructura es el [Vagrantfile]
   - `openjdk-21-jdk`: Entorno de ejecución y compilación de Java 21.
   - `maven`: Gestor de construcción del proyecto.
   - `v4l-utils`: Utilidades del subsistema Video4Linux2 para detección, diagnóstico y configuración de dispositivos de captura de video en Linux.
-  - **Compilación del Código**: Se posiciona en `/vagrant/edgeNode` y compila el código fuente del nodo de borde.
+  - **Compilación del Código**: Se posiciona en `/vagrant/edgeNode` y compila el código fuente del nodo de borde (`mvn clean compile`).
   - **Script de Inicio Parametrizado**: Genera `/home/vagrant/start_edge.sh`, el cual admite como parámetro opcional la fuente de video a utilizar (índice numérico de cámara `0`, `1`, o la ruta a un archivo de video para simulación), conectándose automáticamente a la IP del Servidor Central (`192.168.56.10`).
 
 ---
@@ -207,16 +214,16 @@ El archivo de configuración principal de la infraestructura es el [Vagrantfile]
 Los archivos de código fuente correspondientes al nodo de borde se encuentran en el paquete `org.alumnosinfo.tpdistribuido` dentro de la carpeta [edgeNode](file:///c:/Users/NICOLAS/Desktop/2026/Facultad/pdytr/tp-pdytr/edgeNode):
 
 - **[EdgeNode.java](file:///c:/Users/NICOLAS/Desktop/2026/Facultad/pdytr/tp-pdytr/edgeNode/src/main/java/org/alumnosinfo/tpdistribuido/EdgeNode.java)**:  
-  Es la clase principal y orquestador del nodo de borde. Se encarga de cargar las librerías nativas de OpenCV en el sistema, procesar los parámetros de ejecución (IP del servidor central, identificador de la cámara y fuente de video), coordinar los intentos de conexión y reconexión ante caídas de red, calcular la tasa de fotogramas por segundo (FPS) y gobernar el bucle de captura según el estado actual del nodo.
+  Es la clase principal y orquestador del nodo de borde. Se encarga de cargar las librerías nativas de OpenCV en el sistema (`nu.pattern.OpenCV.loadLocally()`), procesar los parámetros de ejecución (IP del servidor central, identificador de la cámara y fuente de video), coordinar los intentos de conexión y reconexión ante caídas de red, calcular la tasa de fotogramas por segundo (FPS) y gobernar el bucle de captura según el estado actual del nodo.
 
 - **[EdgeStateManager.java](file:///c:/Users/NICOLAS/Desktop/2026/Facultad/pdytr/tp-pdytr/edgeNode/src/main/java/org/alumnosinfo/tpdistribuido/EdgeStateManager.java)**:  
-  Encapsula las variables de estado que controlan la modalidad de operación (análisis local vs. transmisión activa) y la bandera de reinicio del fotograma de referencia. Sus variables utilizan el modificador `volatile` para garantizar la coherencia de memoria entre el hilo que recibe comandos de red y el hilo que procesa video.
+  Modela el estado operativo del nodo de borde de forma segura para hilos mediante variables marcadas con `volatile` (`streamingMode` y `resetPrevGray`), asegurando sincronización inmediata entre el hilo de comandos TCP y el hilo de captura de video.
 
 - **[MotionDetector.java](file:///c:/Users/NICOLAS/Desktop/2026/Facultad/pdytr/tp-pdytr/edgeNode/src/main/java/org/alumnosinfo/tpdistribuido/MotionDetector.java)**:  
-  Implementa el algoritmo de detección de movimiento local en el borde mediante OpenCV. Aplica transformación a escala de grises, filtrado de desenfoque gaussiano para reducción de ruido, sustracción absoluta de fondo respecto al fotograma anterior, binarización por umbral y dilatación morfológica. Analiza los contornos geométricos resultantes y confirma la detección si el área supera los 500 píxeles cuadrados.
+  Implementa el algoritmo de detección de movimiento local en el borde mediante OpenCV. Aplica transformación a escala de grises, filtrado de desenfoque gaussiano de 21x21 para reducción de ruido, sustracción absoluta de fondo (`absdiff`) respecto al fotograma anterior, binarización por umbral y dilatación morfológica. Analiza los contornos geométricos resultantes y confirma la detección si el área supera los 500 píxeles cuadrados.
 
 - **[StreamClient.java](file:///c:/Users/NICOLAS/Desktop/2026/Facultad/pdytr/tp-pdytr/edgeNode/src/main/java/org/alumnosinfo/tpdistribuido/StreamClient.java)**:  
-  Gestiona la conexión por socket TCP con el Servidor Central. Al conectarse, realiza el apretón de manos transmitiendo el identificador del nodo. Mantiene un hilo receptor que escucha comandos entrantes (`START` para activar la transmisión y `STOP` para regresar a análisis local). En el modo de transmisión, comprime los fotogramas en formato JPEG y los envía con enmarcado de longitud en un bloque sincronizado.
+  Gestiona la conexión por socket TCP con el Servidor Central. Al conectarse, realiza el apretón de manos transmitiendo el identificador del nodo. Mantiene un hilo receptor que escucha comandos entrantes (`START` para activar la transmisión y `STOP` para regresar a análisis local). En el modo de transmisión, comprime los fotogramas en formato JPEG y los envía con enmarcado de longitud de 4 bytes en bloques sincronizados.
 
 - **[VideoSource.java](file:///c:/Users/NICOLAS/Desktop/2026/Facultad/pdytr/tp-pdytr/edgeNode/src/main/java/org/alumnosinfo/tpdistribuido/VideoSource.java)**:  
   Capa de abstracción para la captura de video. Soporta tanto dispositivos físicos (mediante el backend V4L2 en Linux o controladores del sistema en Windows) como archivos de video pregrabados (`.mp4`, `.avi`). En el caso de archivos de video, implementa un mecanismo de rebobinado automático al alcanzar el final de la pista para posibilitar simulaciones continuas e ininterrumpidas.
@@ -225,7 +232,7 @@ Los archivos de código fuente correspondientes al nodo de borde se encuentran e
   Archivo de configuración de dependencias de Maven para el nodo de borde. Declara la dependencia de OpenCV empaquetada (`org.openpnp:opencv:4.9.0-0`), librerías de registro SLF4J y el plugin `maven-shade-plugin` para empaquetado autónomo.
 
 - **[edgenode.service](file:///c:/Users/NICOLAS/Desktop/2026/Facultad/pdytr/tp-pdytr/edgeNode/edgenode.service)**:  
-  Unidad de servicio para **systemd**, diseñada para despliegues en dispositivos físicos independientes (como Raspberry Pi), permitiendo que el nodo de borde se inicie automáticamente tras el arranque del sistema y se reinicie ante fallos.
+  Unidad de servicio para **systemd**, diseñada para despliegues en dispositivos físicos independientes (como Raspberry Pi OS), permitiendo que el nodo de borde se inicie automáticamente tras el arranque del sistema.
 
 ---
 
@@ -245,7 +252,7 @@ Los archivos de código fuente correspondientes al nodo de borde se encuentran e
      Para simular un flujo continuo con movimiento sin depender de cámaras físicas adicionales:
      ```bash
      vagrant ssh edge_node_1
-     ./start_edge.sh /vagrant/videos/muestra.mp4
+     ./start_edge.sh /vagrant/videos/prueba.mp4
      ```
 
 ---
@@ -301,7 +308,7 @@ Los archivos de código fuente correspondientes al Servidor Central se encuentra
 
 El panel de control interactivo está ubicado en la carpeta [webClient](file:///c:/Users/NICOLAS/Desktop/2026/Facultad/pdytr/tp-pdytr/webClient) y fue desarrollado con **React + Vite**:
 
-- **Consulta Periódica de Estado**: Realiza sondeos HTTP a la ruta `/api/cameras` para actualizar en tiempo real el listado de cámaras activas, sus direcciones IP y si se encuentran o no transmitiendo.
+- **Consulta Periódica de Estado**: Realiza sondeos HTTP (cada 500 ms) a la ruta `/api/cameras` para actualizar en tiempo real el listado de cámaras activas, sus direcciones IP y si se encuentran o no transmitiendo.
 - **Visualización en Vivo**: Muestra la señal de video de cada cámara que se encuentra en transmisión activa consumiendo directamente el endpoint `/stream?id=CAM_ID`.
 - **Control Remoto**: Incluye botones para forzar manualmente el inicio o la detención de la transmisión de cada cámara mediante las rutas `/api/start` y `/api/stop`.
 - **Ejecución**: Se instala y ejecuta en la máquina anfitriona mediante:
@@ -314,15 +321,71 @@ El panel de control interactivo está ubicado en la carpeta [webClient](file:///
 
 ---
 
-## 7. Resumen de Dependencias y Requisitos del Sistema
+## 7. Resumen Consolidado de Dependencias y Requisitos
 
-| Componente | Software / Tecnología | Versión | Propósito en el Sistema |
+| Componente | Software / Herramienta | Versión | Función en el Sistema |
 | :--- | :--- | :--- | :--- |
-| **Entorno de Virtualización** | Vagrant | $\ge$ 2.3 | Definición y orquestación declarativa de las máquinas virtuales |
-| **Hipervisor** | Oracle VirtualBox | $\ge$ 6.1 / 7.0 | Proveedor de virtualización y emulación de controladores USB |
-| **Sistema Operativo Huésped** | Ubuntu Server | 22.04 LTS (Jammy) | Sistema operativo base en cada máquina virtual |
-| **Plataforma de Desarrollo** | OpenJDK | 21 | Entorno de compilación y ejecución Java |
-| **Herramienta de Construcción** | Apache Maven | $\ge$ 3.8 | Gestión de dependencias y compilación de los módulos Java |
-| **Visión por Computadora** | OpenCV (`org.openpnp:opencv`) | 4.9.0-0 | Procesamiento de imágenes y algoritmos de detección de movimiento |
-| **Gestión de Video en Linux** | `v4l-utils` / Video4Linux2 | Nativo | Detección e inspección de cámaras web USB |
-| **Interfaz Web de Usuario** | React + Vite (Node.js) | Node $\ge$ 18 | Dashboard interactivo de visualización y control |
+| **Virtualización** | Vagrant | $\ge$ 2.3 | Definición y aprovisionamiento automatizado de las VMs |
+| **Hipervisor** | Oracle VirtualBox | $\ge$ 6.1 / 7.0 | Ejecución de VMs y emulación de controladores USB |
+| **Sistema Huésped** | Ubuntu Server | 22.04 LTS (Jammy) | Sistema operativo base en todas las máquinas virtuales |
+| **Lenguaje** | OpenJDK | 21 | Compilación y ejecución de aplicaciones Java |
+| **Construcción** | Apache Maven | $\ge$ 3.8 | Gestión de dependencias y ciclo de vida de compilación |
+| **Visión Artificial** | OpenCV (`org.openpnp:opencv`) | 4.9.0-0 | Procesamiento de imágenes y algoritmos de detección |
+| **Captura Linux** | `v4l-utils` / Video4Linux2 | Nativo | Control y captura de dispositivos de video en Linux |
+| **Frontend Web** | React + Vite (Node.js) | Node $\ge$ 18 | Dashboard interactivo de usuario y visualización |
+
+---
+
+## 8. Guía de Verificación y Puesta en Marcha
+
+### 8.1. Despliegue Automatizado con Vagrant (Recomendado)
+
+1. **Levantar la Infraestructura Virtual (en la raíz del proyecto):**
+   ```bash
+   vagrant up
+   ```
+2. **Iniciar el Servidor Central (Terminal 1):**
+   ```bash
+   vagrant ssh central_server
+   ./start_central.sh
+   ```
+3. **Iniciar el Edge Node 1 (Terminal 2):**
+   ```bash
+   vagrant ssh edge_node_1
+   ./start_edge.sh 0
+   ```
+4. **Iniciar el Edge Node 2 (Terminal 3):**
+   ```bash
+   vagrant ssh edge_node_2
+   ./start_edge.sh /vagrant/videos/prueba.mp4
+   ```
+5. **Iniciar el Dashboard Web en el Host (Terminal 4):**
+   ```bash
+   cd webClient
+   npm install
+   npm run dev
+   ```
+   Acceder a `http://localhost:5173`.
+
+### 8.2. Ejecución Nativa en Host (Sin Virtualización)
+
+1. **Servidor Central**:
+   ```bash
+   cd centralServer
+   mvn exec:java -Dexec.mainClass="org.alumnosinfo.tpdistribuido.CentralServer"
+   ```
+2. **Edge Node 1**:
+   ```bash
+   cd edgeNode
+   mvn exec:java -Dexec.mainClass="org.alumnosinfo.tpdistribuido.EdgeNode" -Dexec.args="localhost CAM_01 0"
+   ```
+3. **Edge Node 2**:
+   ```bash
+   cd edgeNode
+   mvn exec:java -Dexec.mainClass="org.alumnosinfo.tpdistribuido.EdgeNode" -Dexec.args="localhost CAM_02 1"
+   ```
+4. **Web Client**:
+   ```bash
+   cd webClient
+   npm run dev
+   ```
